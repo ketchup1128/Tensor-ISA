@@ -9,14 +9,14 @@ TensorLoad 张量处理指令族
      - TL.CONCAT：3 维张量按指定维度进行有效位拼接
      - TL.MERGE：3 维张量按指定维度进行有效位融合
      - TL.ADDI：张量元素级立即数加法运算
-     - TL.MLOAD/TL.LOAD：按最高维度掩码条件载入数据
-     - TL.MSTORE/TL.STORE：按最高维度掩码条件存储数据
+     - TL.MLOAD：按最高维度掩码条件载入数据
+     - TL.MSTORE：按最高维度掩码条件存储数据
    - 原地操作：source reg 和 destination reg 相同（TL.XPOSE）
    - 立即数支持：TL.ADDI 支持 12 位有符号立即数
    - 内存访问：TL.MLOAD/TL.MSTORE 支持条件化内存操作
 
 ## 2. **编程模型**
-## 2.1 自定义 CSR 
+### 2.1 自定义 CSR 
 这一套指令扩展增加了若干个 CSR。CSR 的基本信息如下表所示
 
 | Address | Name | Description |
@@ -29,7 +29,7 @@ TensorLoad 张量处理指令族
 | TBD  | tmask_load_stride  | 用于辅助 load/store 指令的实现 |
 | TBD  | tmask_load_width  | 用于辅助 load/store 指令的实现 |
 
-### 2.1.1 ttype
+#### 2.1.1 ttype
 | Bits         | Name          | Description                              |
 |--------------|---------------|------------------------------------------|
 | 31:12        | 0             | Reserved (must be zero).                 |
@@ -48,7 +48,7 @@ TensorLoad 张量处理指令族
 
 **后续补充其他浮点数据类型**
 
-### 2.1.2 tshape
+#### 2.1.2 tshape
 每个 block 为三维 tensor， tshape 用于描述该三维 tensor 的大小。
 对于多维度 tensor 的定义与 PyTorch 保持一致。PyTorch 中，Tensor 的维度按索引从 0 开始编号，遵循“左高右低”的原则：
 最高维度（Highest Dimension）：索引 0，即最外层的维度（如 (N, H, W, C) 中的 N 维度）。
@@ -64,7 +64,7 @@ TensorLoad 张量处理指令族
 
 
 
-### 2.1.3 tmask_ls
+#### 2.1.3 tmask_ls
 tmask_ls 用于辅助 tl.load 和 tl.store 的执行，并且只能作用于 block 的最外层维度。因此其有效位由 tshape 决定，为 tmask_ls[shape_dim0 -1 : 0]
 
 如图所示，如果当前设置 shape_dim0 = 2，shape_dim1 = 2，shape_dim2 = 4，则 tmask_ls 的有效位为 tmask_ls[1:0]。若 tmask_ls[1:0] = 2'b01，则表明 load/store 的有效数据为图中蓝色部分。
@@ -74,10 +74,10 @@ tmask_ls 用于辅助 tl.load 和 tl.store 的执行，并且只能作用于 blo
 说明：浅色区表示有效切片，深色区表示无效切片；有效位数量由 `shape_dim0` 限定。
 
 
-### 2.1.4 tmask_concat_1 / tmask_concat_2
+#### 2.1.4 tmask_concat_1 / tmask_concat_2
 tmask_concat_1/tmask_concat_2 用于辅助 tl.concat 的执行，用于辨明指令中指定维度中哪些数据是有效的。更多细节请参考 4.XX节。
 
-## 2.2 自定义架构寄存器
+### 2.2 自定义架构寄存器
 这一套指令扩展增加了 32 个 TensorLoad 架构寄存器 (TLReg): 每个 tlreg 的大小为 1024 Byte，其中 tl0 为 zero 寄存器，其值恒定为 0。
 tlreg中存放的 block 的数据类型及形状信息由ttype和tshape指定。 block 的大小不能超过一个 tlreg 可以表示的范围。 tlreg 的结构如下图所示：
 
@@ -98,13 +98,13 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
 
 
 ## 3. 指令设计
-## 3.1 指令格式总览
+### 3.1 指令格式总览
 Tensor Reshape 扩展指令采用 32-bit 指令编码。
 指令格式概览如下：
     ![指令格式总览](./images/image_isaformat.png)
 
-## 3.2 Load/Store 指令
-### 3.2.1 TL.LOAD / TL.MLOAD 
+### 3.2 Load/Store 指令
+#### 3.2.1 TL.LOAD / TL.MLOAD 
    
    指令功能：按block最高维度掩码从内存条件载入数据到TLReg
    
@@ -140,7 +140,7 @@ for i in range(D0):
    
    
    **汇编语法**：
-   ```
+   
    // 配置csr
    - csrrw x0, TL_LOAD_MASK_CSR,   x10  ; 
    - csrrw x0, TL_LOAD_STRIDE_CSR, x11  ; 
@@ -148,8 +148,8 @@ for i in range(D0):
    
    // 执行掩码载入
    - tl.mload tlrd, offset(rs1)            ; 从rs1地址按上文所述的寻址方式从 L1M 加载数据到 tlreg
-```
-### 3.2.2 TL.STORE / TL.MSTORE 
+
+#### 3.2.2 TL.STORE / TL.MSTORE 
    
    指令功能：按block最高维度掩码将TLReg的数据写入 L0M 中
    
@@ -185,23 +185,22 @@ for i in range(D0):
    
    
    **汇编语法**：
-```
+   
    // 配置csr
-   csrrw x0, TL_STORE_MASK_CSR,   x10  ; 
-   csrrw x0, TL_STORE_STRIDE_CSR, x11  ; 
-   csrrw x0, TL_STORE_WIDTH_CSR,  x12  ; 
+   - csrrw x0, TL_STORE_MASK_CSR,   x10  ; 
+   - csrrw x0, TL_STORE_STRIDE_CSR, x11  ; 
+   - csrrw x0, TL_STORE_WIDTH_CSR,  x12  ; 
    
    // 执行掩码载入
-   tl.mstore tlrs, offset(rs1)            ; 从rs1地址按上文所述的寻址方式将数据从 tlreg 写入到 L0M
-```
+   - tl.mstore tlrs, offset(rs1)            ; 从rs1地址按上文所述的寻址方式将数据从 tlreg 写入到 L0M
 
 
-## 3.3 Arithmetic & Logic 指令
-### 3.3.1 TL.ADDI 指令
-   **指令功能**
-   对TLReg中的每个元素都加上一个12位有符号立即数
+
+### 3.3 Arithmetic & Logic 指令
+#### 3.3.1 TL.ADDI 指令
+   ##### 1. 功能：对TLReg中的每个元素都加上一个12位有符号立即数
    
-   **指令格式** (I-type变体)：
+   ##### 2. 指令格式 (I-type变体)：
    - [31:30] EngineID = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:28] funct2 = 0b00
    - [27:20] imm8   = 立即数
@@ -210,26 +209,24 @@ for i in range(D0):
    - [11:7]  tlrd   = 目标TLReg索引 [0-31]
    - [6:0]   opcode = 0b1011011 (CUSTOM-2)
    
-   **立即数编码**
+   ##### 3. 立即数编码
    8 位有符号立即数采用二进制补码表示：
    - 正数范围: 0 到 +127 (0x00 到 0x7F)
    - 负数范围: -128 到 -1 (0x80 到 0xFF)
    - 符号扩展: 在运算时扩展为 8 位有符号数进行计算
    
    
-   **汇编语法**
-```
+   ##### 4. 汇编语法：
    tl.addi tlrd, tlrs, imm     ; rd[i] = saturate(rs1[i] + imm) for all i
    tl.addi tlr1, tlr2, 10      ; t1中每个元素 = t2对应元素 + 10
    tl.addi tlr3, tlr3, -5      ; t3中每个元素 -= 5 (原地操作)
-```
+
 
 ### 3.4 Data Move 指令
 #### 3.4.1 TL.CONCAT
-**指令功能**
-对两个形状相同的3维张量按指定维度进行有效位拼接
+##### 1. 功能：对两个形状相同的3维张量按指定维度进行有效位拼接
    
-**指令格式**：
+##### 2. 指令格式：
    - [31:30] EngineID   = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:25] funct5     = 维度选择 + 指令标识
    - [24:20] tlrs2      = 源张量2 (TLReg索引[0-31])  
@@ -238,7 +235,7 @@ for i in range(D0):
    - [11:7]  tlrd       = 目标张量 (TLReg索引[0-31])
    - [6:0]   opcode     = 0b1011011 (CUSTOM-2)
    
-**funct5字段定义** (用于TL.CONCAT)
+##### 3. funct5字段定义 (用于TL.CONCAT)
    对于funct3=001 (Data Move)，funct5的5位编码如下：
    - [4:2] = 0b000 (TL.CONCAT)
    - [1:0] = concat_dim (拼接维度，2位，范围0-2，因为是3维张量)
@@ -249,7 +246,7 @@ for i in range(D0):
    - 0b000010 (0x2): 沿维度2拼接
    - 0b000011 (0x3): 保留
    
-**双CSR有效位掩码寄存器**
+##### 4. 双CSR有效位掩码寄存器
    TL_CONACT_MASK1_CSR (): 32位有效位掩码1 (控制tlrs1)
    TL_CONACT_MASK2_CSR (): 32位有效位掩码2 (控制tlrs2)
    
@@ -257,7 +254,7 @@ for i in range(D0):
    - 1 = 该位置的数据有效，参与拼接
    - 0 = 该位置的数据无效，跳过
    
-**拼接算法**：
+##### 5. 拼接算法：
 
 tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，D2。
 则 tlreg 数据排布：
@@ -280,21 +277,20 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
                         i_valid = i_valid + 1
 ```
    
-**汇编语法**：
-```
-   // 设置双掩码
+##### 6. 汇编语法：
+   # 设置双掩码
    csrrw x0, TL_MASK1_CSR, x12   ; 设置rs1有效位掩码
    csrrw x0, TL_MASK2_CSR, x13   ; 设置rs2有效位掩码
    
-   // 执行有效位拼接
+   # 执行有效位拼接
    tl.concat.0 tlr0, tlr1, tlr2        ; 沿维度0拼接 (funct7=0x40)
    tl.concat.1 tlr0, tlr1, tlr2       ; 沿维度1拼接 (funct7=0x41)  
    tl.concat.2 tlr0, tlr1, tlr2       ; 沿维度2拼接 (funct7=0x42)
-```
-### 3.4.2 TL.MERGE
-**指令功能**：对两个形状相同的3维张量按指定维度进行有效位融合
+
+#### 3.4.2 TL.MERGE
+##### 1. 功能：对两个形状相同的3维张量按指定维度进行有效位融合
    
-**指令格式**：
+##### 2. 指令格式：
    - [31:30] EngineID   = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:25] funct5     = 维度选择 + 指令标识
    - [24:20] tlrs2      = 源张量2 (TLReg索引[0-31])  
@@ -302,8 +298,8 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - [14:12] funct3     = 0b001 (Data Move)
    - [11:7]  tlrd       = 目标张量 (TLReg索引[0-31])
    - [6:0]   opcode     = 0b1011011 (CUSTOM-2)
-
-**funct5字段定义** (用于TL.MERGE)
+   
+##### 3. funct5字段定义 (用于TL.MERGE)
    对于funct3=001 (Data Move)，funct5的5位编码如下：
    - [4:2] = 0b001 （TL.MERGE）
    - [1:0] = merge_dim (融合维度，2位，范围0-2，因为是3维张量)
@@ -314,14 +310,14 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - 0b001010 (0x2): 沿维度2融合
    - 0b001011 (0x3): 保留
    
-**CSR有效位掩码寄存器**
+##### 4. CSR有效位掩码寄存器
    TL_CONACT_MASK1_CSR (): 32位有效位掩码1 (控制tlrs1和tlrs2)
    
    掩码位含义：
    - 1 = 该位置的数据来自tlrs1对应位置
    - 0 = 该位置的数据来自tlrs2对应位置
    
-**融合算法**：
+##### 5. 融合算法：
 
 tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，D2。
 则 tlreg 数据排布：
@@ -343,8 +339,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
                         tlrd[i*D1*D2+j*D2+k] = tlrs1[i*D1*D2+j*D2+k]
 ```
    
-**汇编语法**：
-```
+##### 6. 汇编语法：
    // 设置双掩码
    csrrw x0, TL_MASK1_CSR, x12   ; 设置rs1有效位掩码
    csrrw x0, TL_MASK2_CSR, x13   ; 设置rs2有效位掩码
@@ -354,17 +349,16 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    tl.merge.1 tlr0, tlr1, tlr2       ; 沿维度1拼接 (funct7=0x09)  
    tl.merge.2 tlr0, tlr1, tlr2       ; 沿维度2拼接 (funct7=0x0a)
 
-```
+
 
 
 
 
 
 ### 3.5 Transpose 指令
-**指令功能**
-对两个形状相同的3维张量组成的新张量进行指定维度的交换
+##### 1. 功能：对两个形状相同的3维张量组成的新张量进行指定维度的交换
    
-**指令格式**：
+##### 2. 指令格式：
    - [31:30] EngineID   = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:25] funct5     = 转置维度编码
    - [24:20] tlrs2      = 源张量2 (TLReg索引[0-31])  
@@ -374,7 +368,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - [6:0]   opcode     = 0b1011011 (CUSTOM-2)
 
 
-**GPR维度描述格式**
+##### 3. GPR维度描述格式
    dim_gpr寄存器的32位布局：
    - [31:24] D3_size = 第3维度大小 (8位，范围1-255)
    - [23:16] D2_size = 第2维度大小 (8位，范围1-255)  
@@ -384,7 +378,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    约束: D0_size × D1_size × D2_size × D3_size = 2048
 
 
-**funct5** 字段定义 (维度交换 + 指令标识)
+##### 4. funct5 字段定义 (维度交换 + 指令标识)
    对于 funct3=011 (TL.XPOSE)，funct5 的 5 位编码如下：
    - [4]     = 0b0 (TL.XPOSE 基础标识)
    - [3:2]   = dim1 (第二个交换维度，2位，范围 0-3)
@@ -398,14 +392,13 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - 0b01010 (0x0A): 交换维度1和3 (dim0=1, dim1=3)
    - 0b01011 (0x0B): 交换维度2和3 (dim0=2, dim1=3)
    
-**汇编语法**：
-```
+##### 5. 汇编语法：
    tl.xpose.dim0_dim1 tlreg1, tlreg2, dim_gpr
    
-   // 具体指令变体：
+   具体指令变体：
    tl.xpose.01 t1, t2, x10    ; 交换维度0和1 (funct7=0x01)
    tl.xpose.02 t1, t2, x10    ; 交换维度0和2 (funct7=0x02)
-   tl.xpose.03 t1, t2, x10    ; 交换维度0和3 (funct7=0x03)ha
+   tl.xpose.03 t1, t2, x10    ; 交换维度0和3 (funct7=0x03)
    tl.xpose.12 t1, t2, x10    ; 交换维度1和2 (funct7=0x09)
    tl.xpose.13 t1, t2, x10    ; 交换维度1和3 (funct7=0x0A)
    tl.xpose.23 t1, t2, x10    ; 交换维度2和3 (funct7=0x0B)
@@ -414,7 +407,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    // 设置x10仅包含维度大小信息
    li x10, 0x02081008      // D3=2, D2=8, D1=16, D0=8
    tl.xpose.01 t1, t2, x10 ; 交换维度0和1: [8,16,8,2] → [16,8,8,2]
- ```  
+   
 
 ## 4. 操作语义
 
