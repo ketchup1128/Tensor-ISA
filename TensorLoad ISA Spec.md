@@ -409,269 +409,96 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    tl.xpose.01 t1, t2, x10 ; 交换维度0和1: [8,16,8,2] → [16,8,8,2]
    
 
-## 4. 操作语义
-
-### 4.1 TL.XPOSE 张量映射 (funct3=011)
-   4维张量 [D0, D1, D2, D3] 在两个TLReg中的分布：
-   - TLReg1: tensor[0:D0//2, :, :, :] （前半部分）
-   - TLReg2: tensor[D0//2:D0, :, :, :] （后半部分）
-   注：要求D0为偶数，以便均匀分割
-
-### 4.2 TL.XPOSE 转置操作 (funct3=011)
-   transpose(tensor, dim0, dim1):
-   1. 从dim_gpr读取维度大小 [D0, D1, D2, D3]
-   2. 验证数据完整性：D0×D1×D2×D3 = 2048
-   3. 构建4维张量视图从TLReg1和TLReg2
-   4. 执行维度dim0和dim1的交换
-   5. 将结果写回TLReg1和TLReg2
-
-### 4.3 TL.CONCAT有效位拼接操作 (funct3=001)
-   
-   4.3.1 3维张量映射
-   每个TLReg存储一个完整的3维张量 [D0, D1, D2]：
-   - 约束：D0×D1×D2 = 1024 (单个TLReg的容量)
-   - rs1和rs2存储两个形状相同的源张量
-   - rd存储拼接后的结果张量(形状与源张量相同)
-   
-   4.3.2 有效位拼接算法
-   concat_valid_bits(tensor1, tensor2, mask1, mask2, concat_dim):
-   1. 验证tensor1和tensor2形状相同：shape1 == shape2
-   2. 从TL_MASK1_CSR和TL_MASK2_CSR读取32位掩码值
-   3. 根据concat_dim确定拼接维度：
-      - concat_dim=0: 沿D0维度拼接
-      - concat_dim=1: 沿D1维度拼接  
-      - concat_dim=2: 沿D2维度拼接
-   4. 执行有效位收集和拼接：
-      valid_data1 = collect_valid_data(tensor1, mask1, concat_dim)
-      valid_data2 = collect_valid_data(tensor2, mask2, concat_dim)
-      result = concatenate(valid_data1, valid_data2, concat_dim)
-   5. 将结果写入rd指定的TLReg
-
-   4.3.3 有效位收集策略
-   collect_valid_data(tensor, mask, concat_dim):
-   - concat_dim=0: 收集mask[i]=1对应的tensor[i][j][k]
-   - concat_dim=1: 收集mask[j]=1对应的tensor[i][j][k]  
-   - concat_dim=2: 收集mask[k]=1对应的tensor[i][j][k]
-   
-   4.3.4 拼接示例 (您的例子)
-   假设concat_dim=2 (最低维度)，维度大小=4：
-   - rs1数据: [a, b, c, d]
-   - rs2数据: [e, f, g, h]  
-   - mask1: 0011 (位置2,3有效)
-   - mask2: 1100 (位置0,1有效)
-   - 结果: {rs1[2], rs1[3], rs2[0], rs2[1]} = {c, d, e, f}
-
-### 4.4 TL.ADDI立即数加法操作 (funct3=010)
-   
-   4.4.1 元素级运算
-   对TLReg中的每个字节元素执行立即数加法：
-   - 源数据: rs1[0..1023] (1024个字节元素)
-   - 立即数: imm (12位有符号数，范围-2048到+2047)
-   - 目标数据: rd[0..1023]
-   
-   4.4.2 饱和加法算法
-   saturated_add(element, imm):
-   1. 将8位无符号元素转换为16位进行计算
-   2. 计算 result = element + imm
-   3. 应用饱和逻辑：
-      if result > 255: result = 255
-      if result < 0: result = 0
-   4. 返回8位无符号结果
-   
-   4.4.3 并行处理
-   for i in range(1024):
-     rd[i] = saturated_add(rs1[i], imm)
-   
-   4.4.4 运算示例
-   - rs1[0] = 200, imm = 100 → rd[0] = 255 (饱和)
-   - rs1[1] = 50, imm = -100 → rd[1] = 0 (饱和)  
-   - rs1[2] = 128, imm = 10 → rd[2] = 138 (正常)
-   - rs1[3] = 30, imm = -20 → rd[3] = 10 (正常)
-
-### 4.5 TL.MLOAD掩码载入操作 (funct3=011)
-   
-   4.5.1 最高维度掩码载入
-   根据张量维度描述和掩码，条件载入最高维度的数据切片：
-   - 维度描述: rs1 GPR包含张量形状 [D0, D1, D2, D3]
-   - 内存基址: rs2 GPR包含内存起始地址
-   - 载入掩码: TL_LOAD_MASK_CSR控制D0维度的载入
-   - 目标寄存器: rd TLReg接收载入的数据
-   
-   4.5.2 掩码载入算法
-   masked_load(base_addr, shape, mask, target_tlreg):
-   1. 解析张量形状 [D0, D1, D2, D3] 从rs1
-   2. 验证 D0×D1×D2×D3 = 1024 (单TLReg容量)
-   3. 从TL_LOAD_MASK_CSR读取32位掩码
-   4. 对于最高维度D0的每个切片i (i ∈ [0, D0-1]):
-      if mask[i] == 1:
-        slice_size = D1×D2×D3
-        slice_addr = base_addr + i×slice_size
-        target_tlreg[i×slice_size:(i+1)×slice_size] = memory[slice_addr:slice_addr+slice_size]
-      else:
-        target_tlreg[i×slice_size:(i+1)×slice_size] = 0 (或保持不变)
-   
-   4.5.3 载入示例
-   张量形状 [8, 16, 8, 1]，掩码 0b11001100：
-   - 载入切片 0,1,4,5 (mask位为1)
-   - 跳过切片 2,3,6,7 (mask位为0)
-   - 每个切片大小 = 16×8×1 = 128字节
-
-### 4.6 TL.MSTORE掩码存储操作 (funct3=100)
-   
-   4.6.1 最高维度掩码存储
-   根据张量维度描述和掩码，条件存储最高维度的数据切片：
-   - 源寄存器: rs1 TLReg包含待存储数据
-   - 内存基址: rs2 GPR包含内存起始地址
-   - 维度描述: rd GPR包含张量形状 [D0, D1, D2, D3]
-   - 存储掩码: TL_STORE_MASK_CSR控制D0维度的存储
-   
-   4.6.2 掩码存储算法
-   masked_store(source_tlreg, base_addr, shape, mask):
-   1. 解析张量形状 [D0, D1, D2, D3] 从rd
-   2. 验证 D0×D1×D2×D3 = 1024 (单TLReg容量)
-   3. 从TL_STORE_MASK_CSR读取32位掩码
-   4. 对于最高维度D0的每个切片i (i ∈ [0, D0-1]):
-      if mask[i] == 1:
-        slice_size = D1×D2×D3
-        slice_addr = base_addr + i×slice_size
-        memory[slice_addr:slice_addr+slice_size] = source_tlreg[i×slice_size:(i+1)×slice_size]
-      else:
-        跳过该切片的存储操作
-   
-   4.6.3 存储示例
-   张量形状 [4, 32, 8, 1]，掩码 0b1010：
-   - 存储切片 1,3 (mask位为1)
-   - 跳过切片 0,2 (mask位为0)
-   - 每个切片大小 = 32×8×1 = 256字节
-
-### 4.7 地址计算
-   4维张量元素 tensor[i][j][k][l] 的线性地址：
-   addr = i×(D1×D2×D3) + j×(D2×D3) + k×D3 + l
-   
-   3维张量元素 tensor[i][j][k] 的线性地址：
-   addr = i×(D1×D2) + j×D2 + k
 
 ## 5. 使用示例
 
 ### 5.1 简化的基本示例
+```
    # 示例1：交换维度0和1，张量形状[8,16,8,2]
    # D0=8, D1=16, D2=8, D3=2
    li x10, 0x02081008        # D3=2, D2=8, D1=16, D0=8
-   tl.xpose.01 t0, t1, x10   # 执行转置：[8,16,8,2] → [16,8,8,2]
+   tl.xpose.01 tl0, tl1, x10   # 执行转置：[8,16,8,2] → [16,8,8,2]
    
    # 示例2：交换维度2和3，张量形状[16,8,8,2]  
    # D0=16, D1=8, D2=8, D3=2
    li x11, 0x02080810        # D3=2, D2=8, D1=8, D0=16
-   tl.xpose.23 t0, t1, x11   # 执行转置：[16,8,8,2] → [16,8,2,8]
+   tl.xpose.23 tl0, tl1, x11   # 执行转置：[16,8,8,2] → [16,8,2,8]
+```
 
-### 5.2 常见转置模式 (TL.XPOSE)
-   # 矩阵转置：[32,64,1,1] → [64,32,1,1]
-   # D0=32, D1=64, D2=1, D3=1
-   li x11, 0x01014020        # D3=1, D2=1, D1=64, D0=32
-   tl.xpose.01 t2, t3, x11   # 执行矩阵转置
-   
-   # 批量转置：[4,8,8,4] → [4,8,4,8] 
-   # D0=4, D1=8, D2=8, D3=4
-   li x12, 0x04080804        # D3=4, D2=8, D1=8, D0=4
-   tl.xpose.23 t4, t5, x12   # 执行批量转置
-
-### 5.3 有效位拼接示例 (TL.CONCAT)
-   
-   # 示例1：您的例子 - 最低维度拼接 [8,8,4]
-   # rs1=[a,b,c,d], rs2=[e,f,g,h], 期望结果={c,d,e,f}
+### 5.2 有效位拼接示例 (TL.CONCAT)
+```   
+   # 示例1：最低维度拼接 [8,8,4]
    li x20, 0x0000000C        # mask1: 0011 (位置2,3有效)
    li x21, 0x00000003        # mask2: 1100 (位置0,1有效) 
    csrrw x0, TL_MASK1_CSR, x20 # 设置rs1有效位掩码
    csrrw x0, TL_MASK2_CSR, x21 # 设置rs2有效位掩码
-   tl.concat.2 t10, t11, t12   # 沿维度2拼接有效位
+   tl.concat.2 tl10, tl11, tl12   # 沿维度2拼接有效位
    
-   # 示例2：沿维度0稀疏拼接 [16,8,8]
+   # 示例2：沿最高维度稀疏拼接 [8,16,8]
    # 选择rs1的奇数位置和rs2的偶数位置
-   li x22, 0x0000AAAA        # mask1: 奇数位有效 (1010...)
-   li x23, 0x00005555        # mask2: 偶数位有效 (0101...)
+   li x22, 0x000000AA        # mask1: 奇数位有效 (1010...)
    csrrw x0, TL_MASK1_CSR, x22
-   csrrw x0, TL_MASK2_CSR, x23  
-   tl.concat.0 t13, t14, t15   # 沿维度0拼接
-   
-   # 示例3：沿维度1部分拼接 [8,16,4]
-   # 选择rs1前4个和rs2后4个
-   li x24, 0x0000000F        # mask1: 前4位有效 (0000...1111)
-   li x25, 0x0000F000        # mask2: 后4位有效 (1111...0000)
-   csrrw x0, TL_MASK1_CSR, x24
-   csrrw x0, TL_MASK2_CSR, x25
-   tl.concat.1 t16, t17, t18   # 沿维度1拼接
+   tl.merge.0 tl13, tl14, tl15   # 沿维度0拼接
+```
 
-### 5.4 立即数加法示例 (TL.ADDI)
-   
-   # 示例1：图像亮度调整 - 所有像素增加50
-   tl.addi t1, t0, 50          # t1[i] = saturate(t0[i] + 50) for all i
-   
-   # 示例2：数据归一化偏移 - 减去均值128
-   tl.addi t2, t1, -128        # t2[i] = saturate(t1[i] - 128)
-   
-   # 示例3：原地操作 - 对比度增强
-   tl.addi t3, t3, 20          # t3[i] = saturate(t3[i] + 20) (原地)
-   
-   # 示例4：边界处理 - 测试饱和效果
-   # 假设t4中有元素值为[250, 10, 128, 200]
-   tl.addi t5, t4, 100         # 结果: [255, 110, 228, 255] (250+100和200+100都饱和到255)
-   tl.addi t6, t4, -50         # 结果: [200, 0, 78, 150] (10-50饱和到0)
-   
-   # 示例5：批量数据预处理
-   # 对1024字节的张量数据进行偏移校正
-   tl.addi t10, t11, -32       # 减去偏移量32
+### 5.3 立即数加法示例 (TL.ADDI)
+```   
+   # 示例1：构建非零 constant pad
+   tl.addi tl1, tl0, 50          # t1[i] = saturate(t0[i] + 50) for all i
+```   
 
-### 5.5 掩码载入示例 (TL.MLOAD)
-   
-   # 示例1：稀疏矩阵载入 - 张量形状 [8,16,8,1]
+### 5.4 数据载入示例 (TL.MLOAD)
+```   
+   # 示例1：稀疏矩阵载入 - 张量形状 [8,32,4]
    # 只载入第0,1,4,5行 (掩码 0b11001100)
-   li x10, 0x01081008          # 张量形状: D3=1, D2=8, D1=16, D0=8
    li x11, 0x1000              # 内存基地址
    li x12, 0x000000CC          # 载入掩码: 0b11001100
    csrrw x0, TL_LOAD_MASK_CSR, x12 # 设置载入掩码
-   tl.mload t1, x10, x11       # 条件载入到t1
+   tl.mload tl1, 0(x11)       # 条件载入到t1
    
-   # 示例2：边界处理载入 - 张量形状 [4,32,8,1]
-   # 只载入前两个和最后一个切片 (掩码 0b1011)
-   li x13, 0x01082004          # 张量形状: D3=1, D2=8, D1=32, D0=4
+   # 示例2：矩阵完全载入 - 张量形状 [8,32,4]
    li x14, 0x2000              # 内存基地址
-   li x15, 0x0000000B          # 载入掩码: 0b1011
-   csrrw x0, TL_LOAD_MASK_CSR, x15
-   tl.mload t2, x13, x14       # 条件载入到t2
-
+   tl.load t2, x13, x14       # 条件载入到t2
+```
 ### 5.6 掩码存储示例 (TL.MSTORE)
-   
-   # 示例1：稀疏结果存储 - 张量形状 [16,8,8,1]
-   # 只存储奇数索引切片 (掩码 0b1010101010101010)
-   li x16, 0x01081010          # 张量形状: D3=1, D2=8, D1=8, D0=16
+```   
+   # 示例1：稀疏结果存储 - 张量形状 [8,32,4]
+   # 只存储奇数索引切片 (掩码 0b10101010)
    li x17, 0x3000              # 内存基地址
    li x18, 0x0000AAAA          # 存储掩码: 奇数位
    csrrw x0, TL_STORE_MASK_CSR, x18 # 设置存储掩码
-   tl.mstore t3, x17, x16      # 条件存储t3到内存
+   tl.mstore t3, 0(x17)      # 条件存储t3到内存
    
-   # 示例2：部分更新存储 - 张量形状 [8,16,8,1]
+   # 示例2：矩阵完全存储- 张量形状 [8,32,4]
    # 只存储前4个切片 (掩码 0b00001111)
-   li x19, 0x01081008          # 张量形状: D3=1, D2=8, D1=16, D0=8
    li x20, 0x4000              # 内存基地址
-   li x21, 0x0000000F          # 存储掩码: 前4位
-   csrrw x0, TL_STORE_MASK_CSR, x21
-   tl.mstore t4, x20, x19      # 条件存储t4到内存
-   
-   # 示例3：组合操作 - 载入->处理->存储
-   # 载入部分数据，处理后存储到不同位置
-   li x22, 0x000000F0          # 载入掩码: 中间4位
-   li x23, 0x0000000F          # 存储掩码: 前4位
-   csrrw x0, TL_LOAD_MASK_CSR, x22
-   tl.mload t5, x10, x11       # 载入中间切片
-   tl.addi t5, t5, 50          # 数据处理
-   csrrw x0, TL_STORE_MASK_CSR, x23
-   tl.mstore t5, x20, x10      # 存储到前面位置
+   tl.mstore t4, 0(x20)        # 条件存储t4到内存
+```
 
 ## 6. 异常和错误处理
 
 ### 6.1 异常条件
    
-   TL.XPOSE (funct3=000):
+   TL.MLOAD (funct3=000):
+   - 非法TLReg索引 (>31)
+   - 非法GPR索引 (>31)
+   - 内存访问越界或对齐错误
+   - TL_LOAD_MASK_CSR未初始化
+   - 最高维度大小超过32 (掩码位数限制)
+   
+   TL.MSTORE (funct3=000):
+   - 非法TLReg索引 (>31)
+   - 非法GPR索引 (>31)
+   - 内存访问越界或对齐错误
+   - TL_STORE_MASK_CSR未初始化
+   - 最高维度大小超过32 (掩码位数限制)
+
+   TL.ADDI (funct3=010):
+   - 非法TLReg索引 (>31)
+   - 立即数超出范围 (不在-127到+128之间，但硬件应自动截断)
+   - 无其他异常条件 (饱和运算不抛出异常)
+   
+   TL.XPOSE (funct3=011):
    - 非法TLReg索引 (>31)
    - 非法维度索引 (>3)
    - 维度乘积不等于2048
@@ -685,27 +512,16 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - 源张量形状不匹配
    - TL_MASK1_CSR或TL_MASK2_CSR未初始化
    - 有效位数量超出目标张量容量
-   
-   TL.ADDI (funct3=010):
+  
+   TL.MERGE (funct3=001):
    - 非法TLReg索引 (>31)
-   - 立即数超出范围 (不在-2048到+2047之间，但硬件应自动截断)
-   - 无其他异常条件 (饱和运算不抛出异常)
+   - 非法拼接维度 (merge_dim > 2)
+   - 3维张量大小超过1024字节
+   - 源张量形状不匹配
+   - TL_MASK1_CSR未初始化
+   - 有效位数量超出目标张量容量
    
-   TL.MLOAD (funct3=011):
-   - 非法TLReg索引 (>31)
-   - 非法GPR索引 (>31)
-   - 张量维度乘积不等于1024
-   - 内存访问越界或对齐错误
-   - TL_LOAD_MASK_CSR未初始化
-   - 最高维度大小超过32 (掩码位数限制)
-   
-   TL.MSTORE (funct3=100):
-   - 非法TLReg索引 (>31)
-   - 非法GPR索引 (>31)
-   - 张量维度乘积不等于1024
-   - 内存访问越界或对齐错误
-   - TL_STORE_MASK_CSR未初始化
-   - 最高维度大小超过32 (掩码位数限制)
+
 
 ### 6.2 错误处理
    - 维度验证失败：触发非法指令异常
