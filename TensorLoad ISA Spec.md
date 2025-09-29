@@ -75,7 +75,7 @@ tmask_ls 用于辅助 tl.load 和 tl.store 的执行，并且只能作用于 blo
 
 
 #### 2.1.4 tmask_concat_1 / tmask_concat_2
-tmask_concat_1/tmask_concat_2 用于辅助 tl.concat 的执行，用于辨明指令中指定维度中哪些数据是有效的。更多细节请参考 4.XX节。
+tmask_concat_1/tmask_concat_2 用于辅助 tl.concat 的执行，用于辨明指令中指定维度中哪些数据是有效的。更多细节请参考后续章节。
 
 ### 2.2 自定义架构寄存器
 这一套指令扩展增加了 32 个 TensorLoad 架构寄存器 (TLReg): 每个 tlreg 的大小为 1024 Byte，其中 tl0 为 zero 寄存器，其值恒定为 0。
@@ -86,6 +86,11 @@ tlreg中存放的 block 的数据类型及形状信息由ttype和tshape指定。
 说明：`TLReg` 容量为 1024 Byte，按 `ttype` 和 `tshape` 进行元素解释与维度映射。
 
 tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，D2。
+约束： 
+ - D1* D2 *data_type = 128 Byte
+ - D2* data_type >= 4 Byte。
+ - data_type 为 int8 时，D0，D1，D2 为4的整数倍
+  
 则 tlreg 数据排布：
 ```
     for i in range(D0):
@@ -140,7 +145,7 @@ for i in range(D0):
    
    
    **汇编语法**：
-   
+```
    // 配置csr
    - csrrw x0, TL_LOAD_MASK_CSR,   x10  ; 
    - csrrw x0, TL_LOAD_STRIDE_CSR, x11  ; 
@@ -148,12 +153,13 @@ for i in range(D0):
    
    // 执行掩码载入
    - tl.mload tlrd, offset(rs1)            ; 从rs1地址按上文所述的寻址方式从 L1M 加载数据到 tlreg
+```
 
 #### 3.2.2 TL.STORE / TL.MSTORE 
    
-   指令功能：按block最高维度掩码将TLReg的数据写入 L0M 中
+   **指令功能**: 按block最高维度掩码将TLReg的数据写入 L0M 中
    
-   **指令格式**：
+   **指令格式**
    - [31:30] EngineID = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29]    st      = 0b1
    - [28]    tm      = 
@@ -164,8 +170,7 @@ for i in range(D0):
    - [6:0]   opcode  = 0b1011011 (CUSTOM-2)
    
    
-   **掩码存储控制**
-   TL_STORE_MASK_CSR：32 位存储掩码寄存器
+   **掩码存储控制**: TL_STORE_MASK_CSR：32 位存储掩码寄存器
    - 控制最高维度的哪些切片需要存储
    - 1 = 存储该切片，0 = 跳过该切片
    - 掩码位数由张量最高维度大小确定
@@ -198,9 +203,9 @@ for i in range(D0):
 
 ### 3.3 Arithmetic & Logic 指令
 #### 3.3.1 TL.ADDI 指令
-   ##### 1. 功能：对TLReg中的每个元素都加上一个12位有符号立即数
+   **指令功能**: 对TLReg中的每个元素都加上一个12位有符号立即数
    
-   ##### 2. 指令格式 (I-type变体)：
+   **指令格式** (I-type变体)：
    - [31:30] EngineID = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:28] funct2 = 0b00
    - [27:20] imm8   = 立即数
@@ -209,24 +214,25 @@ for i in range(D0):
    - [11:7]  tlrd   = 目标TLReg索引 [0-31]
    - [6:0]   opcode = 0b1011011 (CUSTOM-2)
    
-   ##### 3. 立即数编码
-   8 位有符号立即数采用二进制补码表示：
+   **立即数编码**: 8 位有符号立即数采用二进制补码表示：
    - 正数范围: 0 到 +127 (0x00 到 0x7F)
    - 负数范围: -128 到 -1 (0x80 到 0xFF)
    - 符号扩展: 在运算时扩展为 8 位有符号数进行计算
    
    
-   ##### 4. 汇编语法：
+   **汇编语法**：
+   ```
    tl.addi tlrd, tlrs, imm     ; rd[i] = saturate(rs1[i] + imm) for all i
    tl.addi tlr1, tlr2, 10      ; t1中每个元素 = t2对应元素 + 10
    tl.addi tlr3, tlr3, -5      ; t3中每个元素 -= 5 (原地操作)
+   ```
 
 
 ### 3.4 Data Move 指令
 #### 3.4.1 TL.CONCAT
-##### 1. 功能：对两个形状相同的3维张量按指定维度进行有效位拼接
+**指令功能**: 对两个形状相同的3维张量按指定维度进行有效位拼接
    
-##### 2. 指令格式：
+**指令格式**
    - [31:30] EngineID   = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:25] funct5     = 维度选择 + 指令标识
    - [24:20] tlrs2      = 源张量2 (TLReg索引[0-31])  
@@ -235,7 +241,7 @@ for i in range(D0):
    - [11:7]  tlrd       = 目标张量 (TLReg索引[0-31])
    - [6:0]   opcode     = 0b1011011 (CUSTOM-2)
    
-##### 3. funct5字段定义 (用于TL.CONCAT)
+**funct5字段定义**:
    对于funct3=001 (Data Move)，funct5的5位编码如下：
    - [4:2] = 0b000 (TL.CONCAT)
    - [1:0] = concat_dim (拼接维度，2位，范围0-2，因为是3维张量)
@@ -246,7 +252,8 @@ for i in range(D0):
    - 0b000010 (0x2): 沿维度2拼接
    - 0b000011 (0x3): 保留
    
-##### 4. 双CSR有效位掩码寄存器
+**双CSR有效位掩码寄存器**
+
    TL_CONACT_MASK1_CSR (): 32位有效位掩码1 (控制tlrs1)
    TL_CONACT_MASK2_CSR (): 32位有效位掩码2 (控制tlrs2)
    
@@ -254,7 +261,7 @@ for i in range(D0):
    - 1 = 该位置的数据有效，参与拼接
    - 0 = 该位置的数据无效，跳过
    
-##### 5. 拼接算法：
+**拼接算法**
 
 tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，D2。
 则 tlreg 数据排布：
@@ -277,7 +284,8 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
                         i_valid = i_valid + 1
 ```
    
-##### 6. 汇编语法：
+**汇编语法**：
+```
    # 设置双掩码
    csrrw x0, TL_MASK1_CSR, x12   ; 设置rs1有效位掩码
    csrrw x0, TL_MASK2_CSR, x13   ; 设置rs2有效位掩码
@@ -286,11 +294,12 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    tl.concat.0 tlr0, tlr1, tlr2        ; 沿维度0拼接 (funct7=0x40)
    tl.concat.1 tlr0, tlr1, tlr2       ; 沿维度1拼接 (funct7=0x41)  
    tl.concat.2 tlr0, tlr1, tlr2       ; 沿维度2拼接 (funct7=0x42)
+```
 
 #### 3.4.2 TL.MERGE
-##### 1. 功能：对两个形状相同的3维张量按指定维度进行有效位融合
+**指令功能**：对两个形状相同的3维张量按指定维度进行有效位融合
    
-##### 2. 指令格式：
+**指令格式**：
    - [31:30] EngineID   = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:25] funct5     = 维度选择 + 指令标识
    - [24:20] tlrs2      = 源张量2 (TLReg索引[0-31])  
@@ -299,7 +308,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - [11:7]  tlrd       = 目标张量 (TLReg索引[0-31])
    - [6:0]   opcode     = 0b1011011 (CUSTOM-2)
    
-##### 3. funct5字段定义 (用于TL.MERGE)
+**funct5字段定义** (用于TL.MERGE)
    对于funct3=001 (Data Move)，funct5的5位编码如下：
    - [4:2] = 0b001 （TL.MERGE）
    - [1:0] = merge_dim (融合维度，2位，范围0-2，因为是3维张量)
@@ -310,14 +319,15 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - 0b001010 (0x2): 沿维度2融合
    - 0b001011 (0x3): 保留
    
-##### 4. CSR有效位掩码寄存器
+**CSR有效位掩码寄存器**
+
    TL_CONACT_MASK1_CSR (): 32位有效位掩码1 (控制tlrs1和tlrs2)
    
    掩码位含义：
    - 1 = 该位置的数据来自tlrs1对应位置
    - 0 = 该位置的数据来自tlrs2对应位置
    
-##### 5. 融合算法：
+**融合算法**：
 
 tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，D2。
 则 tlreg 数据排布：
@@ -339,7 +349,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
                         tlrd[i*D1*D2+j*D2+k] = tlrs1[i*D1*D2+j*D2+k]
 ```
    
-##### 6. 汇编语法：
+**汇编语法**：
 ```
    // 设置双掩码
    csrrw x0, TL_MASK1_CSR, x12   ; 设置rs1有效位掩码
@@ -357,9 +367,9 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
 
 
 ### 3.5 Transpose 指令
-##### 1. 功能：对两个形状相同的3维张量组成的新张量进行指定维度的交换
+**指令功能**：对两个形状相同的3维张量组成的新张量进行指定维度的交换
    
-##### 2. 指令格式：
+**指令格式**：
    - [31:30] EngineID   = 0b00(TensorLoad) / 0b01(TensorComp) / 0b10(TensorStore) / 0b11(Reshape)
    - [29:25] funct5     = 转置维度编码
    - [24:20] tlrs2      = 源张量2 (TLReg索引[0-31])  
@@ -369,8 +379,8 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - [6:0]   opcode     = 0b1011011 (CUSTOM-2)
 
 
-##### 3. GPR维度描述格式
-   dim_gpr寄存器的32位布局：
+**GPR维度描述格式**：
+   dim_gpr寄存器的32位布局
    - [31:24] D3_size = 第3维度大小 (8位，范围1-255)
    - [23:16] D2_size = 第2维度大小 (8位，范围1-255)  
    - [15:8]  D1_size = 第1维度大小 (8位，范围1-255)
@@ -379,7 +389,8 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    约束: D0_size × D1_size × D2_size × D3_size = 2048
 
 
-##### 4. funct5 字段定义 (维度交换 + 指令标识)
+**funct5 字段定义 (维度交换 + 指令标识)**
+
    对于 funct3=011 (TL.XPOSE)，funct5 的 5 位编码如下：
    - [4]     = 0b0 (TL.XPOSE 基础标识)
    - [3:2]   = dim1 (第二个交换维度，2位，范围 0-3)
@@ -393,7 +404,8 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    - 0b01010 (0x0A): 交换维度1和3 (dim0=1, dim1=3)
    - 0b01011 (0x0B): 交换维度2和3 (dim0=2, dim1=3)
    
-##### 5. 汇编语法：
+**汇编语法**：
+```
    tl.xpose.dim0_dim1 tlreg1, tlreg2, dim_gpr
    
    具体指令变体：
@@ -408,12 +420,12 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    // 设置x10仅包含维度大小信息
    li x10, 0x02081008      // D3=2, D2=8, D1=16, D0=8
    tl.xpose.01 t1, t2, x10 ; 交换维度0和1: [8,16,8,2] → [16,8,8,2]
-   
+```   
 
 
-## 5. 使用示例
+## 4. 使用示例
 
-### 5.1 简化的基本示例
+### 4.1 简化的基本示例
 ```
    # 示例1：交换维度0和1，张量形状[8,16,8,2]
    # D0=8, D1=16, D2=8, D3=2
@@ -426,7 +438,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    tl.xpose.23 tl0, tl1, x11   # 执行转置：[16,8,8,2] → [16,8,2,8]
 ```
 
-### 5.2 有效位拼接示例 (TL.CONCAT)
+### 4.2 有效位拼接示例 (TL.CONCAT)
 ```   
    # 示例1：最低维度拼接 [8,8,4]
    li x20, 0x0000000C        # mask1: 0011 (位置2,3有效)
@@ -442,13 +454,13 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    tl.merge.0 tl13, tl14, tl15   # 沿维度0拼接
 ```
 
-### 5.3 立即数加法示例 (TL.ADDI)
+### 4.3 立即数加法示例 (TL.ADDI)
 ```   
    # 示例1：构建非零 constant pad
    tl.addi tl1, tl0, 50          # t1[i] = saturate(t0[i] + 50) for all i
 ```   
 
-### 5.4 数据载入示例 (TL.MLOAD)
+### 4.4 数据载入示例 (TL.MLOAD)
 ```   
    # 示例1：稀疏矩阵载入 - 张量形状 [8,32,4]
    # 只载入第0,1,4,5行 (掩码 0b11001100)
@@ -461,7 +473,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    li x14, 0x2000              # 内存基地址
    tl.load t2, x13, x14       # 条件载入到t2
 ```
-### 5.6 掩码存储示例 (TL.MSTORE)
+### 4.5 掩码存储示例 (TL.MSTORE)
 ```   
    # 示例1：稀疏结果存储 - 张量形状 [8,32,4]
    # 只存储奇数索引切片 (掩码 0b10101010)
@@ -476,9 +488,9 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    tl.mstore t4, 0(x20)        # 条件存储t4到内存
 ```
 
-## 6. 异常和错误处理
+## 5. 异常和错误处理
 
-### 6.1 异常条件
+### 5.1 异常条件
    
    TL.MLOAD (funct3=000):
    - 非法TLReg索引 (>31)
@@ -524,32 +536,21 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    
 
 
-### 6.2 错误处理
+### 5.2 错误处理
    - 维度验证失败：触发非法指令异常
    - 访问越界：触发存储访问异常
    - 正常情况：指令正常完成，无状态更新
 
-## 7. 实现注意事项
+## 6. 实现注意事项
 
-### 7.1 性能优化
+### 6.1 性能优化
    - 可以使用硬件加速的数据重排单元
    - 支持流水线操作，提高吞吐量
    - 缓存友好的数据访问模式
 
-### 7.2 硬件要求
+### 6.2 硬件要求
    - 需要专用的TLReg寄存器文件
    - 高带宽的数据重排引擎
    - 与通用寄存器文件的高速接口
 
-## 8. 扩展性
 
-### 8.1 未来扩展方向
-   - 支持不同数据类型（int16, int32, float32等）
-   - 支持更大的张量（多对TLReg组合）
-   - 支持更复杂的张量变换（reshape, permute等）
-
-### 8.2 指令变体 (使用CUSTOM-2空间的不同funct7值)
-   - TL.XPOSE.W: 32位元素版本 (funct7 = 0b0110010)
-   - TL.XPOSE.H: 16位元素版本 (funct7 = 0b0110011)
-   - TL.XPOSE.D: 双精度浮点版本 (funct7 = 0b0110100)
-   - 基础版本: 8位元素版本 (funct7 = 0b0110001)
