@@ -340,6 +340,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
 ```
    
 ##### 6. 汇编语法：
+```
    // 设置双掩码
    csrrw x0, TL_MASK1_CSR, x12   ; 设置rs1有效位掩码
    csrrw x0, TL_MASK2_CSR, x13   ; 设置rs2有效位掩码
@@ -348,7 +349,7 @@ tlreg 中存储的是一个三维 block， 其尺寸信息分别为：D0，D1，
    tl.merge.0 tlr0, tlr1, tlr2        ; 沿维度0拼接 (funct7=0x08)
    tl.merge.1 tlr0, tlr1, tlr2       ; 沿维度1拼接 (funct7=0x09)  
    tl.merge.2 tlr0, tlr1, tlr2       ; 沿维度2拼接 (funct7=0x0a)
-
+```
 
 
 
